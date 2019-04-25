@@ -12,43 +12,50 @@
 
 jmp_buf buf;
 
+static int Initialized = 0;
+
 struct ThreadControlBlock
 {
     jmp_buf Registers;
     int *ESP;
     /* 0 for running; 1 for ready to run; 2 for exited */
     int Status;
+    pthread_t ThreadID;
 };
 
 struct TCBPool
 {
-    struct ThreadControlBlock ThreadPool[MAX_THREADS];
+    struct ThreadControlBlock TCB[MAX_THREADS];
 };
 
-int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void*), void *arg)
+struct TCBPool ThreadPool;
+
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *), void *arg)
 {
-    static int Initialized = 0;
-    pthread_t ThreadID;
+    static pthread_t ThreadID = (struct _opaque_pthread_t *)9999;
     /* If not initialized, initialize thread pool */
     if (!Initialized)
     {
         /* Initialize the main thread pool */
-        
+        int i = 0;
+        for (int i = 0; i < MAX_THREADS; i++)
+        {
+            ThreadPool.TCB[i].Status = 2;
+        }
+        Initialized = 1;
     }
     else
     {
-        
+
     }
-    
-    return 
+
+    return (int)ThreadID;
 }
 
 void pthread_exit(void *value_ptr)
 {
-    
 }
 
 pthread_t pthread_self(void)
 {
-
 }
