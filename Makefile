@@ -1,7 +1,10 @@
 all: auto_grader
 
-auto_grader:autograder_main.c thread_lib 
-	g++ autograder_main.c threads.o -o auto_grader
+auto_grader:test.c thread_lib 
+	gcc -g test.c threads.o -o auto_grader
 
-thread_lib:threads.cpp
-	g++ -c threads.cpp -o threads.o
+thread_lib:pthread.c
+	gcc -c pthread.c -o threads.o
+
+clean:
+	rm auto_grader threads.o
