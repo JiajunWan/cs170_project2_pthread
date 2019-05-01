@@ -170,11 +170,11 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_
         {
             int i;
             int temp;
-            for (i = 1; i <= MAX_QUEUE/2; i++)
+            for (i = 1; i <= MAX_QUEUE / 2; i++)
             {
                 temp = SchedulerThreadPoolIndexQueue.IndexQueue[i];
-                SchedulerThreadPoolIndexQueue.IndexQueue[i] = SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE-i];
-                SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE-i] = temp;
+                SchedulerThreadPoolIndexQueue.IndexQueue[i] = SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE - i];
+                SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE - i] = temp;
             }
         }
 
@@ -208,19 +208,21 @@ void pthread_exit(void *value_ptr)
     /* Stop Timer */
     setitimer(ITIMER_REAL, &Zero_Timer, NULL);
 
-    /* If the current exit caller is main, then exit */
-    if (Index == 0)
+    /* If exit last thread, first free, and then exit */
+    if (size(&SchedulerThreadPoolIndexQueue) == 0)
     {
-        while (size(&SchedulerThreadPoolIndexQueue) > 0)
+        if (Index != 0)
         {
-            Index = popfront(&SchedulerThreadPoolIndexQueue);
             free((unsigned long *)ThreadPool.TCB[Index].ESP);
         }
         exit(0);
     }
 
     /* Clean Up */
-    free(ThreadPool.TCB[Index].ESP);
+    if (Index != 0)
+    {
+        free((unsigned long *)ThreadPool.TCB[Index].ESP);
+    }
     ThreadPool.TCB[Index].ThreadID = 0;
     ThreadPool.TCB[Index].ESP = NULL;
     ThreadPool.TCB[Index].start_routine = NULL;
