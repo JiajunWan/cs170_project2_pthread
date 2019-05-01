@@ -11,12 +11,8 @@
 #include <time.h>
 
 #define MAX_THREADS 128
-
-void scheduler(int signum);
-
-static long int i64_ptr_mangle(long int p);
-
-static void WrapperFunction();
+#define MAX_QUEUE 129
+#define INTERVAL 50
 
 enum STATE
 {
@@ -28,7 +24,7 @@ enum STATE
 struct ThreadControlBlock
 {
     pthread_t ThreadID;
-    char *ESP;
+    unsigned long *ESP;
     enum STATE Status;
     void *(*start_routine)(void *);
     void *arg;
@@ -46,7 +42,7 @@ struct queue
     int front;     /* Init 0 */
     int rear;      /* Init -1 */
     int itemCount; /* Init 0 */
-    int IndexQueue[MAX_THREADS + 1];
+    int IndexQueue[MAX_QUEUE];
 };
 
 int peekfront(struct queue *Queue);
@@ -57,46 +53,35 @@ void pushback(struct queue *Queue, int Index);
 
 int popfront(struct queue *Queue);
 
-static struct queue WrapperFunctionTCBIndexQueue = {0, -1, 0};
-static struct queue SchedulerThreadPoolIndexQueue = {0, -1, 0};
+void Scheduler();
+
+void WrapperFunction();
+
+static long int i64_ptr_mangle(long int p);
+
+struct queue SchedulerThreadPoolIndexQueue = {0, -1, 0};
 
 struct TCBPool ThreadPool;
-
-static struct sigaction siga;
 
 static int Initialized = 0;
 
 static int NextCreateTCBIndex = 1;
 
-// static int QueuedThreadNum = 1;
-
 static unsigned long ThreadID = 1;
 
-static struct itimerval Timer = {0}, Zero_Timer = {0};
+static struct sigaction sigact;
+static struct itimerval Timer;
+static struct itimerval Zero_Timer = {0};
 
-/* May Delete static */
-static void WrapperFunction()
+void WrapperFunction()
 {
-    int TCBIndex = popfront(&WrapperFunctionTCBIndexQueue);
+    int TCBIndex = peekfront(&SchedulerThreadPoolIndexQueue);
     ThreadPool.TCB[TCBIndex].start_routine(ThreadPool.TCB[TCBIndex].arg);
     pthread_exit(0);
 }
 
 void main_thread_init()
 {
-    siga.sa_handler = scheduler;
-    sigemptyset(&siga.sa_mask);
-    siga.sa_flags = SA_NODEFER;
-    if (sigaction(SIGALRM, &siga, NULL) == -1)
-    {
-        perror("Unable to catch SIGALRM!");
-        exit(1);
-    }
-
-    Timer.it_value.tv_sec = 50 / 1000;
-    Timer.it_value.tv_usec = (50 * 1000) % 1000000;
-    Timer.it_interval = Timer.it_value;
-
     int i;
     for (i = 1; i < MAX_THREADS + 1; i++)
     {
@@ -105,7 +90,7 @@ void main_thread_init()
     Initialized = 1;
 
     /* Main thread TCB Index is 0 and Main thread ID is 99999 */
-    ThreadPool.TCB[0].ThreadID = (struct _opaque_pthread_t *)99999;
+    ThreadPool.TCB[0].ThreadID = 99999;
     ThreadPool.TCB[0].Status = ACTIVE;
     ThreadPool.TCB[0].ESP = NULL;
     ThreadPool.TCB[0].start_routine = NULL;
@@ -113,15 +98,23 @@ void main_thread_init()
     setjmp(ThreadPool.TCB[0].Registers);
     pushback(&SchedulerThreadPoolIndexQueue, 0);
 
-    /* Check if there is error in starting timer */
-    if (setitimer(ITIMER_REAL, &Timer, NULL) == -1)
+    sigact.sa_handler = Scheduler;
+    sigemptyset(&sigact.sa_mask);
+    sigact.sa_flags = SA_NODEFER;
+    if (sigaction(SIGALRM, &sigact, NULL) == -1)
     {
-        perror("Error Setting Timer!");
+        perror("Unable to catch SIGALRM!");
         exit(1);
     }
+    Timer.it_value.tv_sec = INTERVAL / 1000;
+    Timer.it_value.tv_usec = (INTERVAL * 1000) % 1000000;
+    Timer.it_interval = Timer.it_value;
 
-    /* Pause Timer */
-    pause();
+    if (setitimer(ITIMER_REAL, &Timer, NULL) == -1)
+    {
+        perror("Error calling setitimer()");
+        exit(1);
+    }
 }
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *), void *arg)
@@ -132,7 +125,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_
         /* Initialize the main thread pool */
         main_thread_init();
     }
-    else if (size(&SchedulerThreadPoolIndexQueue) <= 129)
+    if (size(&SchedulerThreadPoolIndexQueue) < MAX_QUEUE)
     {
 
         /* Pause Timer */
@@ -140,7 +133,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_
 
         /* Find the next available Thread Pool slot */
         int i;
-        for (i = 1; i < MAX_THREADS + 1; i++)
+        for (i = 1; i < MAX_QUEUE; i++)
         {
             if (ThreadPool.TCB[i].Status == EXITED)
             {
@@ -151,44 +144,46 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_
 
         /* Initialize for the chosen slot */
         ThreadPool.TCB[NextCreateTCBIndex].ThreadID = ThreadID++;
+        ThreadPool.TCB[NextCreateTCBIndex].ESP = (unsigned long *)malloc(32767);
         ThreadPool.TCB[NextCreateTCBIndex].Status = ACTIVE;
-        ThreadPool.TCB[NextCreateTCBIndex].ESP = (char *)malloc(32767);
         ThreadPool.TCB[NextCreateTCBIndex].start_routine = start_routine;
         ThreadPool.TCB[NextCreateTCBIndex].arg = arg;
         *thread = ThreadPool.TCB[NextCreateTCBIndex].ThreadID;
 
-        /* Change data of slot 8 bytes below the top of stack to the address of pthread_exit */
-        *(int *)(ThreadPool.TCB[NextCreateTCBIndex].ESP + 32759) = (int)pthread_exit;
-
-        /* Switch between setjmp and memset */
+        /* Setjmp */
         setjmp(ThreadPool.TCB[NextCreateTCBIndex].Registers);
-
-        // /* initialize jump buf structure to be 0, just in case there's garbage */
-        // memset(&tmp_tcb.jb,0,sizeof(tmp_tcb.jb));
-        // /* the jmp buffer has a stored signal mask; zero it out just in case */
-        // sigemptyset(&tmp_tcb.jb->__saved_mask);
 
         /* Save the address of Wrapper Function to a pointer */
         void (*WrapperFunctionPointer)() = &WrapperFunction;
 
         /* Change External Stack Pointer in the jmp_buf */
-        ThreadPool.TCB[NextCreateTCBIndex].Registers[0].__jmpbuf[6] = i64_ptr_mangle((char)(ThreadPool.TCB[NextCreateTCBIndex].ESP + 32759));
+        ThreadPool.TCB[NextCreateTCBIndex].Registers[0].__jmpbuf[6] = i64_ptr_mangle((unsigned long)(ThreadPool.TCB[NextCreateTCBIndex].ESP + 32759 / 8 - 2));
 
         /* Change External Instruction Pointer to Wrapper Function in the jmp_buf */
-        ThreadPool.TCB[NextCreateTCBIndex].Registers[0].__jmpbuf[7] = i64_ptr_mangle((char)WrapperFunctionPointer);
+        ThreadPool.TCB[NextCreateTCBIndex].Registers[0].__jmpbuf[7] = i64_ptr_mangle((unsigned long)WrapperFunctionPointer);
 
         /* Add the New Thread Thread Pool Index to the Queue */
-        pushback(&WrapperFunctionTCBIndexQueue, NextCreateTCBIndex);
         pushback(&SchedulerThreadPoolIndexQueue, NextCreateTCBIndex);
 
-        // /* Track the number of queued threads */
-        // QueuedThreadNum++;
+        /* Manually swtich inverse the order of threads in queue in case of segfault when freeing esp of last thread(128) */
+        if (size(&SchedulerThreadPoolIndexQueue) == 129)
+        {
+            int i;
+            int temp;
+            for (i = 1; i <= MAX_QUEUE/2; i++)
+            {
+                temp = SchedulerThreadPoolIndexQueue.IndexQueue[i];
+                SchedulerThreadPoolIndexQueue.IndexQueue[i] = SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE-i];
+                SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE-i] = temp;
+            }
+        }
 
         /* Resume Timer */
         setitimer(ITIMER_REAL, &Timer, NULL);
 
         return 0;
     }
+
     /* Reach the Max number of concurrent threads and return -1 as error */
     else
     {
@@ -209,33 +204,37 @@ void pthread_exit(void *value_ptr)
         exit(0);
     }
 
+    int Index = popfront(&SchedulerThreadPoolIndexQueue);
     /* Stop Timer */
     setitimer(ITIMER_REAL, &Zero_Timer, NULL);
 
     /* If the current exit caller is main, then exit */
-    if (ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].ThreadID == 99999)
+    if (Index == 0)
     {
+        while (size(&SchedulerThreadPoolIndexQueue) > 0)
+        {
+            Index = popfront(&SchedulerThreadPoolIndexQueue);
+            free((unsigned long *)ThreadPool.TCB[Index].ESP);
+        }
         exit(0);
     }
 
     /* Clean Up */
-    free((char *)ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].ESP);
-    ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].ESP = NULL;
-    ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].start_routine = NULL;
-    ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].arg = NULL;
-    ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].Status = EXITED;
-    popfront(&SchedulerThreadPoolIndexQueue);
+    free(ThreadPool.TCB[Index].ESP);
+    ThreadPool.TCB[Index].ThreadID = 0;
+    ThreadPool.TCB[Index].ESP = NULL;
+    ThreadPool.TCB[Index].start_routine = NULL;
+    ThreadPool.TCB[Index].arg = NULL;
+    ThreadPool.TCB[Index].Status = EXITED;
 
     /* Start Timer */
     setitimer(ITIMER_REAL, &Timer, NULL);
 
     /* Longjmp to the front(next) thread registers */
     longjmp(ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].Registers, 1);
-
-    // QueuedThreadNum--;
 }
 
-void scheduler(int signum)
+void Scheduler()
 {
     /* If only one main thread, just return */
     if (size(&SchedulerThreadPoolIndexQueue) <= 1)
@@ -246,26 +245,14 @@ void scheduler(int signum)
     if (setjmp(ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].Registers) == 0)
     {
         /* Pushback the poped front Thread Pool Index of the saved thread to the end of queue */
-        pushback(&SchedulerThreadPoolIndexQueue, popfront(&SchedulerThreadPoolIndexQueue));
+        int Index = peekfront(&SchedulerThreadPoolIndexQueue);
+        pushback(&SchedulerThreadPoolIndexQueue, Index);
+        popfront(&SchedulerThreadPoolIndexQueue);
 
         /* Longjmp to the front(next) thread registers */
         longjmp(ThreadPool.TCB[peekfront(&SchedulerThreadPoolIndexQueue)].Registers, 1);
     }
-
     return;
-}
-
-static long int i64_ptr_mangle(long int p)
-{
-    long int ret;
-    asm(" mov %1, %%rax;\n"
-        " xor %%fs:0x30, %%rax;"
-        " rol $0x11, %%rax;"
-        " mov %%rax, %0;"
-        : "=r"(ret)
-        : "r"(p)
-        : "%rax");
-    return ret;
 }
 
 int peekfront(struct queue *Queue)
@@ -281,7 +268,7 @@ int size(struct queue *Queue)
 void pushback(struct queue *Queue, int Index)
 {
 
-    if (Queue->rear == 128 - 1)
+    if (Queue->rear == MAX_QUEUE - 1)
     {
         Queue->rear = -1;
     }
@@ -296,7 +283,7 @@ int popfront(struct queue *Queue)
     int Index = Queue->IndexQueue[Queue->front];
     Queue->front += 1;
 
-    if (Queue->front == 128)
+    if (Queue->front == MAX_QUEUE)
     {
         Queue->front = 0;
     }
@@ -305,37 +292,15 @@ int popfront(struct queue *Queue)
     return Index;
 }
 
-// int peekfront(struct queue Queue)
-// {
-//     return Queue.IndexQueue[Queue.front];
-// }
-
-// int size(struct queue Queue)
-// {
-//     return Queue.itemCount;
-// }
-
-// void pushback(struct queue Queue, int data)
-// {
-
-//     if (Queue.rear == MAX_THREADS - 1)
-//     {
-//         Queue.rear = -1;
-//     }
-
-//     Queue.IndexQueue[++Queue.rear] = data;
-//     Queue.itemCount += 1;
-// }
-
-// int popfront(struct queue Queue)
-// {
-//     int data = Queue.IndexQueue[Queue.front++];
-
-//     if (Queue.front == MAX_THREADS)
-//     {
-//         Queue.front = 0;
-//     }
-
-//     Queue.itemCount -= 1;
-//     return data;
-// }
+static long int i64_ptr_mangle(long int p)
+{
+    long int ret;
+    asm(" mov %1, %%rax;\n"
+        " xor %%fs:0x30, %%rax;"
+        " rol $0x11, %%rax;"
+        " mov %%rax, %0;"
+        : "=r"(ret)
+        : "r"(p)
+        : "%rax");
+    return ret;
+}

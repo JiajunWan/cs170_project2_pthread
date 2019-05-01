@@ -246,8 +246,8 @@ int main(void){
 
         //child, launches the test
         if (pid == 0){
-            dup2(devnull_fd, STDOUT_FILENO); //begone debug messages
-            dup2(devnull_fd, STDERR_FILENO);
+            // dup2(devnull_fd, STDOUT_FILENO); //begone debug messages
+            // dup2(devnull_fd, STDERR_FILENO);
             
             score = test_arr[i]();
             
