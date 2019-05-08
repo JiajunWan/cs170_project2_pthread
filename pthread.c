@@ -51,6 +51,8 @@ int size(struct queue *Queue);
 
 void pushback(struct queue *Queue, int Index);
 
+void pushsecond(struct queue *Queue, int Index);
+
 int popfront(struct queue *Queue);
 
 void Scheduler();
@@ -162,21 +164,8 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_
         /* Change External Instruction Pointer to Wrapper Function in the jmp_buf */
         ThreadPool.TCB[NextCreateTCBIndex].Registers[0].__jmpbuf[7] = i64_ptr_mangle((unsigned long)WrapperFunctionPointer);
 
-        /* Add the New Thread Thread Pool Index to the Queue */
-        pushback(&SchedulerThreadPoolIndexQueue, NextCreateTCBIndex);
-
-        /* Manually swtich inverse the order of threads in queue in case of segfault when freeing esp of last thread(128) */
-        if (size(&SchedulerThreadPoolIndexQueue) == 129)
-        {
-            int i;
-            int temp;
-            for (i = 1; i <= MAX_QUEUE / 2; i++)
-            {
-                temp = SchedulerThreadPoolIndexQueue.IndexQueue[i];
-                SchedulerThreadPoolIndexQueue.IndexQueue[i] = SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE - i];
-                SchedulerThreadPoolIndexQueue.IndexQueue[MAX_QUEUE - i] = temp;
-            }
-        }
+        /* Add the New Thread Thread Pool Index to the second place in the Queue in case of segfault when freeing esp of last thread with high index*/
+        pushsecond(&SchedulerThreadPoolIndexQueue, NextCreateTCBIndex);
 
         /* Resume Timer */
         setitimer(ITIMER_REAL, &Timer, NULL);
@@ -277,6 +266,24 @@ void pushback(struct queue *Queue, int Index)
 
     Queue->rear += 1;
     Queue->IndexQueue[Queue->rear] = Index;
+    Queue->itemCount += 1;
+}
+
+void pushsecond(struct queue *Queue, int Index)
+{
+
+    if (Queue->rear == MAX_QUEUE - 1)
+    {
+        Queue->rear = -1;
+    }
+
+    Queue->rear += 1;
+    int i;
+    for (i = Queue->rear; i > Queue->front + 1; i--)
+    {
+        Queue->IndexQueue[i] = Queue->IndexQueue[i-1];
+    }
+    Queue->IndexQueue[Queue->front + 1] = Index;
     Queue->itemCount += 1;
 }
 
